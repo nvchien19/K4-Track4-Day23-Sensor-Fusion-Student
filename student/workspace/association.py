@@ -11,10 +11,12 @@ from typing import Any
 from typing import Sequence
 
 import numpy as np
+from scipy.stats import chi2
 
-# vi: from fusion_lab.workspace_support import get_tracking_params
-# vi: from fusion_lab.workspace_loader import load_workspace_module
-# vi: kalman = load_workspace_module("kalman")  # không dùng `import kalman`
+from fusion_lab.workspace_loader import load_workspace_module
+from fusion_lab.workspace_support import get_tracking_params
+
+kalman = load_workspace_module("kalman")
 
 
 def mahalanobis_distance(track: Any, meas: Any) -> float:
@@ -30,7 +32,11 @@ def mahalanobis_distance(track: Any, meas: Any) -> float:
     # vi: TODO Part F — H = meas.sensor.get_H(track.x);
     # vi: gamma = kalman.innovation(...); S = kalman.innovation_covariance(...);
     # vi: return gamma.T @ inv(S) @ gamma (float scalar).
-    raise NotImplementedError("TODO: implement mahalanobis_distance")
+    H = meas.sensor.get_H(track.x)
+    gamma = kalman.innovation(track.x, meas)
+    S = kalman.innovation_covariance(track.P, meas, H)
+    value = gamma.T @ np.linalg.inv(np.asarray(S)) @ gamma
+    return float(np.asarray(value).reshape(-1)[0])
 
 
 def chi2_gate(mhd_sq: float, sensor: Any) -> bool:
@@ -44,7 +50,9 @@ def chi2_gate(mhd_sq: float, sensor: Any) -> bool:
         True if inside gate.
     """
     # vi: TODO Part F — ngưỡng chi2.ppf(gating_threshold, sensor.dim_meas) từ params.
-    raise NotImplementedError("TODO: implement chi2_gate")
+    params = get_tracking_params()
+    threshold = chi2.ppf(params.gating_threshold, sensor.dim_meas)
+    return bool(mhd_sq <= threshold)
 
 
 def association_cost_matrix(
@@ -62,7 +70,15 @@ def association_cost_matrix(
     """
     # vi: TODO Part F — khởi tạo toàn inf; kiểm tra meas.sensor.in_fov(track.x)
     # vi: trước MHD (camera sau lưng/độ sâu 0 không được chiếu); rồi kiểm tra chi2.
-    raise NotImplementedError("TODO: implement association_cost_matrix")
+    costs = np.full((len(track_list), len(meas_list)), np.inf)
+    for row, track in enumerate(track_list):
+        for column, meas in enumerate(meas_list):
+            if not meas.sensor.in_fov(track.x):
+                continue
+            distance = mahalanobis_distance(track, meas)
+            if chi2_gate(distance, meas.sensor):
+                costs[row, column] = distance
+    return np.asmatrix(costs)
 
 
 def pick_next_pair(
@@ -83,7 +99,20 @@ def pick_next_pair(
     """
     # vi: TODO Part F — chỉ lấy cặp hữu hạn nhỏ nhất rồi xóa hàng/cột tương ứng;
     # vi: ma trận rỗng/toàn inf: trả np.nan, np.nan và giữ các danh sách chưa ghép.
-    raise NotImplementedError("TODO: implement pick_next_pair")
+    costs = np.asarray(association_matrix, dtype=float)
+    if costs.size == 0:
+        return np.nan, np.nan, association_matrix, unassigned_tracks, unassigned_meas
+    finite = np.where(np.isfinite(costs), costs, np.inf)
+    flat_index = int(np.argmin(finite))
+    if not np.isfinite(finite.reshape(-1)[flat_index]):
+        return np.nan, np.nan, association_matrix, unassigned_tracks, unassigned_meas
+    row, column = np.unravel_index(flat_index, costs.shape)
+    track = unassigned_tracks[row]
+    meas = unassigned_meas[column]
+    remaining = np.delete(np.delete(costs, row, axis=0), column, axis=1)
+    remaining_tracks = [t for index, t in enumerate(unassigned_tracks) if index != row]
+    remaining_meas = [m for index, m in enumerate(unassigned_meas) if index != column]
+    return track, meas, np.asmatrix(remaining), remaining_tracks, remaining_meas
 
 
 def associate_and_update(
@@ -109,4 +138,16 @@ def associate_and_update(
     # vi: Ghép cặp hữu hạn, filter_obj.update rồi handle_updated_track(track, sensor).
     # vi: Không bỏ qua FOV sau khi đã xóa cặp khỏi danh sách chưa ghép.
     # vi: Kết thúc manager.manage_tracks(unassigned_tracks, unassigned_meas, sensor).
-    raise NotImplementedError("TODO: implement associate_and_update")
+    unassigned_tracks = list(manager.track_list)
+    unassigned_meas = list(meas_list)
+    if unassigned_tracks and unassigned_meas:
+        costs = association_cost_matrix(unassigned_tracks, unassigned_meas)
+        while unassigned_tracks and unassigned_meas:
+            track, meas, costs, unassigned_tracks, unassigned_meas = pick_next_pair(
+                costs, unassigned_tracks, unassigned_meas
+            )
+            if isinstance(track, float) and np.isnan(track):
+                break
+            filter_obj.update(track, meas)
+            manager.handle_updated_track(track, sensor)
+    manager.manage_tracks(unassigned_tracks, unassigned_meas, sensor)
