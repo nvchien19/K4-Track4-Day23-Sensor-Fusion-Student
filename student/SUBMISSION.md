@@ -8,7 +8,7 @@
 - MSSV: 2A202602926
 - Email: nvchien1904@gmail.com
 - Link repo (fork): https://github.com/nvchien19/K4-Track4-Day23-Sensor-Fusion-Student
-- Commit hash nộp (`git rev-parse HEAD`): <<ĐIỀN SAU KHI COMMIT>>
+- Commit hash nộp (`git rev-parse HEAD`): 5ec2591 (code + artifacts commit)
 
 ## Tóm tắt kết quả
 
